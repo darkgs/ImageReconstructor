@@ -13,6 +13,7 @@ import torchvision
 from dataset.cifar10 import get_cifar10_torch_datasets
 
 from utils.utils import weights_init
+from utils.utils import save_images
 from utils.utils import mkdir
 
 class SimpleVAE(nn.Module):
@@ -80,6 +81,9 @@ class ImageReconstructor(object):
 
         signal.signal(signal.SIGINT, gracefull_die)
 
+        self._test_images = datasets['data']['test'].sample_images(8)
+        self._test_images_g = torch.tensor(self._test_images).to(self._device)
+
     def save(self, epoch, valid_acc):
         dict_saved_data = {
             'epoch': epoch,
@@ -128,7 +132,7 @@ class ImageReconstructor(object):
             loss_sum += loss.item()
             loss_count += x.size(0)
 
-        return loss_sum / loss_count
+        return (loss_sum / loss_count) if loss_count > 0 else -1.
 
     def test(self, data_type):
         assert(data_type in ['train', 'valid', 'test'])
@@ -141,11 +145,13 @@ class ImageReconstructor(object):
             x = x.to(self._device)
             x_recon = self._model(x)
 
-            err = (x - x_recon).view(x.size(0), -1)
-            print(err.shape)
-            break
+            err = ((x - x_recon)**2).view(x.size(0), -1)
+            err = torch.mean(err, dim=1, keepdim=False)
 
-        return loss_sum / loss_count
+            loss_sum = torch.sum(err).item()
+            loss_count += err.size(0)
+
+        return (loss_sum / loss_count) if loss_count > 0 else -1.
 
     def train(self):
         epoch_st, top_valid_acc = self.load()
@@ -156,10 +162,6 @@ class ImageReconstructor(object):
             epoch_train_loss = self.train_a_epoch()
             epoch_valid_acc = self.test('valid')
 
-            print("{:.4f}".format(epoch_train_loss))
-            
-            continue
-
             epoch_log = "Epoch {}: train loss({:.4f}), valid acc ({:.4f})".format(
                 epoch, epoch_train_loss, epoch_valid_acc)
 
@@ -167,6 +169,18 @@ class ImageReconstructor(object):
                 top_valid_acc = epoch_valid_acc
                 self.save(epoch, top_valid_acc)
                 epoch_log += ": Saved! - valid acc({:.4f})".format(top_valid_acc)
+
+            if epoch % 1 == 0:
+                x_gen = self._model(self._test_images_g).detach().cpu().numpy()
+
+                images_for_storing = []
+                for i in range(self._test_images.shape[0]):
+                    images_for_storing.append(self._test_images[i])
+                    images_for_storing.append(x_gen[i])
+                images_for_storing = np.stack(images_for_storing)
+
+                save_images(images_for_storing,
+                    'intermediate/epoch_{:04d}.png'.format(epoch))
 
             print(epoch_log)
 
