@@ -1,0 +1,11 @@
+venv
+data
+*.swp
+*/__pycache__/*
+*.pyc
+*.h5
+cache
+*.pth
+*.pth*
+*.png
+intermediate
