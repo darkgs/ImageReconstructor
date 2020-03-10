@@ -2,7 +2,7 @@
 - python3.x
 - pip3
 - NVIDA CUDA 10.1
-- python3 virtualenv (pip3 install virtualenv)
+- python3 virtualenv
 
 # setup environments
 - python3 -m virtualenv venv
