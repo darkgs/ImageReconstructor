@@ -12,14 +12,49 @@ import torchvision
 
 from dataset.cifar10 import get_cifar10_torch_datasets
 
-from model.alexnet import AlexNet
-from model.googlenet import GoogLeNet
-
 from utils.utils import weights_init
 from utils.utils import mkdir
 
-class ImageClassifier(object):
-    def __init__(self, datasets, model_f, path_saved_model):
+class SimpleVAE(nn.Module):
+    def __init__(self):
+        super(SimpleVAE, self).__init__()
+
+        self._encode = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 96, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(),
+        )
+
+        self._linear = nn.Sequential(
+            nn.Linear(6144, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 6144),
+            nn.ReLU(),
+        )
+
+        self._decode = nn.Sequential(
+            nn.ConvTranspose2d(96, 64, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 3, kernel_size=4, stride=2, padding=1),
+            nn.Sigmoid(),
+        )
+
+        self.apply(weights_init)
+    
+    def forward(self, x):
+        x = self._encode(x)
+        shape_before = x.shape
+
+        x = x.view(x.size(0), -1)
+        x = self._linear(x)
+        x = x.view(x.size(0), *shape_before[1:])
+
+        x = self._decode(x)
+        return x
+
+class ImageReconstructor(object):
+    def __init__(self, datasets, model, path_saved_model):
 
         self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -29,16 +64,14 @@ class ImageClassifier(object):
             self._dataloaders[data_type] = torch.utils.data.DataLoader(datasets['data'][data_type],
                 batch_size=batch_size, shuffle=shuffle, num_workers=16)
 
-        self._model_f = model_f.to(self._device)
+        self._model = model.to(self._device)
 
-        self._criterion = nn.CrossEntropyLoss()
-        self._optimizer = torch.optim.Adam(self._model_f.parameters())
-
-        self._classes = datasets['classes']
+        self._criterion = nn.MSELoss()
+        self._optimizer = torch.optim.Adam(self._model.parameters())
 
         self._path_saved_model = path_saved_model
         mkdir(os.path.dirname(self._path_saved_model))
-        
+
         def gracefull_die(sig, fram):
             print("Trigger the gracefull die")
             if os.path.exists(self._path_saved_model):
@@ -51,7 +84,7 @@ class ImageClassifier(object):
         dict_saved_data = {
             'epoch': epoch,
             'valid_acc': valid_acc,
-            'model_f': self._model_f.state_dict(),
+            'model': self._model.state_dict(),
             'optimizer': self._optimizer.state_dict(),
         }
 
@@ -65,7 +98,7 @@ class ImageClassifier(object):
         dict_saved_data = torch.load(self._path_saved_model)
 
         try:
-            self._model_f.load_state_dict(dict_saved_data['model_f'])
+            self._model.load_state_dict(dict_saved_data['model'])
             self._optimizer.load_state_dict(dict_saved_data['optimizer'])
         except:
             print("model unmatch!!")
@@ -77,44 +110,42 @@ class ImageClassifier(object):
         return dict_saved_data['epoch'], dict_saved_data['valid_acc']
 
     def train_a_epoch(self):
-        self._model_f.train()
+        self._model.train()
 
         loss_sum = 0
         loss_count = 0
-        for x, y in self._dataloaders['train']:
+        for x, _ in self._dataloaders['train']:
             self._optimizer.zero_grad()
 
             x = x.to(self._device)
-            y = y.type(torch.LongTensor).to(self._device)
+            x_recon = self._model(x)
 
-            y_pred = self._model_f(x)
-
-            loss = self._criterion(y_pred, y)
+            loss = self._criterion(x, x_recon)
             loss.backward()
 
             self._optimizer.step()
 
             loss_sum += loss.item()
-            loss_count += y.size(0)
+            loss_count += x.size(0)
 
         return loss_sum / loss_count
 
     def test(self, data_type):
-        self._model_f.eval()
+        assert(data_type in ['train', 'valid', 'test'])
 
-        acc_sum = 0
-        acc_count = 0
-        for x, y in self._dataloaders[data_type]:
+        self._model.eval()
+
+        loss_sum = 0
+        loss_count = 0
+        for x, _ in self._dataloaders[data_type]:
             x = x.to(self._device)
-            y = y.type(torch.LongTensor).to(self._device)
+            x_recon = self._model(x)
 
-            y_pred = self._model_f(x)
-            _, y_pred = torch.max(y_pred.data, 1)
+            err = (x - x_recon).view(x.size(0), -1)
+            print(err.shape)
+            break
 
-            acc_sum += (y_pred == y).sum().item()
-            acc_count += y.size(0)
-
-        return acc_sum / acc_count
+        return loss_sum / loss_count
 
     def train(self):
         epoch_st, top_valid_acc = self.load()
@@ -124,6 +155,10 @@ class ImageClassifier(object):
         for epoch in range(epoch_st, epochs+1):
             epoch_train_loss = self.train_a_epoch()
             epoch_valid_acc = self.test('valid')
+
+            print("{:.4f}".format(epoch_train_loss))
+            
+            continue
 
             epoch_log = "Epoch {}: train loss({:.4f}), valid acc ({:.4f})".format(
                 epoch, epoch_train_loss, epoch_valid_acc)
@@ -147,26 +182,15 @@ def main():
 
     # parse from args
     path_cifar10 = args.path_cifar10
-    name_model_f = args.model_f
     path_saved_model = args.path_saved_model
 
-    # Load the target dataset
+    # Load the target dataset, model
     datasets = get_cifar10_torch_datasets(path_cifar10)
+    model = SimpleVAE()
 
-    print("hello")
-
-    return
-
-    # Generate a torch image classifier
-    ic = ImageClassifier(datasets, model_f, path_saved_model)
-    ic.train()
-
-    ic.load()
-    train_acc = ic.test('train')
-    valid_acc = ic.test('valid')
-    test_acc = ic.test('test')
-
-    print('train_acc({:.4f}) valid acc({:.4f}) test acc({:.4f})'.format(train_acc, valid_acc, test_acc))
+    # Generate a ImageReconstructor
+    ir = ImageReconstructor(datasets, model, path_saved_model)
+    ir.train()
 
 
 if __name__ == '__main__':
